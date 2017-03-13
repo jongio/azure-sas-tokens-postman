@@ -29,7 +29,7 @@ To run in Postman
 1\. Copy [azure-storage/azure-storage-sas-postman.js](azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script Sandbox.
 ![](assets/azure-storage-pre-request-script.png)
 
-The first part of this code file is a port of the Azure Storage Node SDK to work with Postman's sandbox.  The bottom of the file contains the code that generates the SAS QueryString and saves it to an Environment variable.  (The device-export-postman-env-variable-name setting you set above.)  You can read more about the SAS Token port form Azure Storage Node SDK to Postman here: ["How to Generate an Azure Storage Shared Access Signature (SAS) Token in Postman's Pre-request Script Sandbox"](http://blog.jongallant.com/azure-storage-sas-token-postman)
+The first part of this code file is a port of the Azure Storage Node SDK to work with Postman's sandbox.  The bottom of the file contains the code that generates the SAS QueryString and saves it to an Environment variable.  (The device-export-postman-env-variable-name setting you set above.)  You can read more about the SAS Token port form Azure Storage Node SDK to Postman here: ["How to Generate an Azure Storage Shared Access Signature (SAS) Token in Postman's Pre-request Script Sandbox"](http://blog.jongallant.com/azure-storage-sas-tokens-postman)
 
 ``` javascript
 var storageSas = new AzureStorageSas(accountName, accountKey);
