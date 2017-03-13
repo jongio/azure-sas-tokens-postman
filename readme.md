@@ -21,11 +21,15 @@ node azure-storage-sas-test.js jongiothubdeviceexport R+Jdx5k+O7bIjCJD8zQF3/bCAL
 It will output the following SAS Token QueryString.
 ```
 st=2017-03-13T04%3A43%3A25Z&se=2017-03-13T05%3A43%3A25Z&sp=rwd&sv=2016-05-31&sr=c&sig=LkSBh1v4oZv1XE0YKn1s%2Fu9DuVWs6vo347Djj4yDy0s%3D
-
 ```
 
 ### Generate Tokens in Postman
-To run in Postman, copy [azure-storage/azure-storage-sas-postman.js](azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script and set the following environment variables:
+To run in Postman
+
+1. Copy [azure-storage/azure-storage-sas-postman.js](azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script Sandbox.
+![](assets/azure-storage-pre-request-script.png)
+
+2. Set the following environment variables:
 
 > These variable names have "device-storage" in them because this was created with the Azure IoT Hub Device Export REST APIs in mind. You can change these names to whatever suits your needs.
 
@@ -48,6 +52,8 @@ var signedQueryString = storageSas.getSignedQueryString(options);
 
 postman.setEnvironmentVariable(postmanEnvVariableName, signedQueryString);
 ```
+
+3. Execute the request.
 
 You can then use the SAS Token QueryString in subsequent Postman calls by either:
 
