@@ -7,7 +7,7 @@ This repo contains a collections of [Postman](http://getpostman.com) Pre-request
 ## Azure Storage SAS
 
 ### Generate Tokens Locally
-Download (or clone this repo) the [azure-storage/azure-storage-sas-test.js](blob/master/azure-storage/azure-storage-sas-test.js) and [azure-storage/azure-storage-sas.js](blob/master/azure-storage/azure-storage-sas.js) files to run locally.
+Download (or clone this repo) the [azure-storage/azure-storage-sas-test.js](azure-storage/azure-storage-sas-test.js) and [azure-storage/azure-storage-sas.js](azure-storage/azure-storage-sas.js) files to run locally.
 
 ```
 node azure-storage-sas-test.js account-name account-key container-name
@@ -25,7 +25,7 @@ st=2017-03-13T04%3A43%3A25Z&se=2017-03-13T05%3A43%3A25Z&sp=rwd&sv=2016-05-31&sr=
 ```
 
 ### Generate Tokens in Postman
-To run in Postman, copy [azure-storage/azure-storage-sas-postman.js](blob/master/azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script and set the following environment variables:
+To run in Postman, copy [azure-storage/azure-storage-sas-postman.js](azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script and set the following environment variables:
 
 > These variable names have "device-storage" in them because this was created with the Azure IoT Hub Device Export REST APIs in mind. You can change these names to whatever suits your needs.
 
