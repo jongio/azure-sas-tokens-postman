@@ -1,23 +1,420 @@
-﻿// 
-// Copyright (c) Microsoft and contributors.  All rights reserved.
-// 
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-//   http://www.apache.org/licenses/LICENSE-2.0
-// 
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// 
-// See the License for the specific language governing permissions and
-// limitations under the License.
-// 
+﻿var _ = require('lodash');
+var CryptoJS = require('crypto-js');
 
-// Expose 'Constants'.
-exports = module.exports;
 
-var storageDnsSuffix = process.env.AZURE_STORAGE_DNS_SUFFIX || 'core.windows.net';
+function AzureStorageSas(storageAccount, storageAccessKey, usePathStyleUri) {
+  this.storageAccount = storageAccount;
+  this.storageAccessKey = storageAccessKey;
+  this.usePathStyleUri = usePathStyleUri;
+}
+
+AzureStorageSas.prototype.generateAccountSignedQueryString = function (sharedAccessPolicy) {
+  var addIfNotNull = function (queryString, name, value) {
+    if (!objectIsNull(name) && !objectIsNull(value)) {
+      queryString[name] = value;
+    }
+  };
+
+  var formatAccessPolicyDates = function (accessPolicy) {
+    if (!objectIsNull(accessPolicy.Start)) {
+      if (!_.isDate(accessPolicy.Start)) {
+        accessPolicy.Start = new Date(accessPolicy.Start);
+      }
+
+      accessPolicy.Start = truncatedISO8061Date(accessPolicy.Start);
+    }
+
+    if (!objectIsNull(accessPolicy.Expiry)) {
+      if (!_.isDate(accessPolicy.Expiry)) {
+        accessPolicy.Expiry = new Date(accessPolicy.Expiry);
+      }
+
+      accessPolicy.Expiry = truncatedISO8061Date(accessPolicy.Expiry);
+    }
+  };
+
+  var queryString = {};
+
+  addIfNotNull(queryString, QueryStringConstants.SIGNED_VERSION, HeaderConstants.TARGET_STORAGE_VERSION);
+
+  // add shared access policy params
+  if (sharedAccessPolicy.AccessPolicy) {
+    formatAccessPolicyDates(sharedAccessPolicy.AccessPolicy);
+
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_SERVICES, sharedAccessPolicy.AccessPolicy.Services);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_RESOURCE_TYPES, sharedAccessPolicy.AccessPolicy.ResourceTypes);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_PERMISSIONS, sharedAccessPolicy.AccessPolicy.Permissions);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_START, sharedAccessPolicy.AccessPolicy.Start);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_EXPIRY, sharedAccessPolicy.AccessPolicy.Expiry);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_IP, sharedAccessPolicy.AccessPolicy.IPAddressOrRange);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_PROTOCOL, sharedAccessPolicy.AccessPolicy.Protocols);
+  }
+
+  // add signature
+  addIfNotNull(queryString, QueryStringConstants.SIGNATURE, this._generateAccountSharedAccessSignature(sharedAccessPolicy));
+
+  return this.queryStringStringify(queryString);
+};
+
+AzureStorageSas.prototype._generateAccountSharedAccessSignature = function (sharedAccessPolicy) {
+  var getvalueToAppend = function (value, noNewLine) {
+    var returnValue = '';
+    if (!objectIsNull(value)) {
+      returnValue = value;
+    }
+
+    if (noNewLine !== true) {
+      returnValue += '\n';
+    }
+
+    return returnValue;
+  }.bind(this);
+
+  var stringToSign = getvalueToAppend(this.storageAccount) +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Permissions : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Services : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.ResourceTypes : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Start : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Expiry : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.IPAddressOrRange : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Protocols : '') +
+    getvalueToAppend(HeaderConstants.TARGET_STORAGE_VERSION);
+
+  return this.signer.sign(stringToSign);
+};
+
+AzureStorageSas.prototype.signRequest = function (webResource, callback) {
+  var getvalueToAppend = function (value, headerName) {
+    // Do not sign content-length 0 in 2014-08-16 and later
+    if (headerName === HeaderConstants.CONTENT_LENGTH && (objectIsNull(value[headerName]) || value[headerName].toString() === '0')) {
+      return '\n';
+    } else if (objectIsNull(value) || objectIsNull(value[headerName])) {
+      return '\n';
+    } else {
+      return value[headerName] + '\n';
+    }
+  };
+
+  var stringToSign =
+    webResource.method + '\n' +
+    getvalueToAppend(webResource.headers, HeaderConstants.CONTENT_ENCODING) +
+    getvalueToAppend(webResource.headers, HeaderConstants.CONTENT_LANGUAGE) +
+    getvalueToAppend(webResource.headers, HeaderConstants.CONTENT_LENGTH) +
+    getvalueToAppend(webResource.headers, HeaderConstants.CONTENT_MD5) +
+    getvalueToAppend(webResource.headers, HeaderConstants.CONTENT_TYPE) +
+    getvalueToAppend(webResource.headers, HeaderConstants.DATE) +
+    getvalueToAppend(webResource.headers, HeaderConstants.IF_MODIFIED_SINCE) +
+    getvalueToAppend(webResource.headers, HeaderConstants.IF_MATCH) +
+    getvalueToAppend(webResource.headers, HeaderConstants.IF_NONE_MATCH) +
+    getvalueToAppend(webResource.headers, HeaderConstants.IF_UNMODIFIED_SINCE) +
+    getvalueToAppend(webResource.headers, HeaderConstants.RANGE) +
+    this._getCanonicalizedHeaders(webResource) +
+    this._getCanonicalizedResource(webResource);
+
+  var signature = this.signer.sign(stringToSign);
+
+  webResource.withHeader(HeaderConstants.AUTHORIZATION, 'AzureStorageSas ' + this.storageAccount + ':' + signature);
+  callback(null);
+};
+
+AzureStorageSas.prototype._getCanonicalizedResource = function (webResource) {
+  var path = '/';
+  if (webResource.path) {
+    path = webResource.path;
+  }
+
+  var canonicalizedResource = '/' + this.storageAccount + path;
+
+  // Get the raw query string values for signing
+  var queryStringValues = webResource.queryString;
+
+  // Build the canonicalized resource by sorting the values by name.
+  if (queryStringValues) {
+    var paramNames = [];
+    Object.keys(queryStringValues).forEach(function (n) {
+      paramNames.push(n);
+    });
+
+    paramNames = paramNames.sort();
+    Object.keys(paramNames).forEach(function (name) {
+      canonicalizedResource += '\n' + paramNames[name] + ':' + queryStringValues[paramNames[name]];
+    });
+  }
+
+  return canonicalizedResource;
+};
+
+AzureStorageSas.prototype._getCanonicalizedHeaders = function (webResource) {
+  // Build canonicalized headers
+  var canonicalizedHeaders = '';
+  if (webResource.headers) {
+    var canonicalizedHeadersArray = [];
+    for (var header in webResource.headers) {
+      if (header.indexOf(HeaderConstants.PREFIX_FOR_STORAGE) === 0) {
+        var headerItem = { canonicalized: header.toLowerCase(), original: header };
+        canonicalizedHeadersArray.push(headerItem);
+      }
+    }
+
+    canonicalizedHeadersArray.sort(function (a, b) { return a.canonicalized.localeCompare(b.canonicalized); });
+
+    _.each(canonicalizedHeadersArray, function (currentHeaderItem) {
+      var value = webResource.headers[currentHeaderItem.original];
+      if (!IsNullOrEmptyOrUndefinedOrWhiteSpace(value)) {
+        canonicalizedHeaders += currentHeaderItem.canonicalized + ':' + value + '\n';
+      } else {
+        canonicalizedHeaders += currentHeaderItem.canonicalized + ':\n';
+      }
+    });
+  }
+
+  return canonicalizedHeaders;
+};
+
+AzureStorageSas.prototype.getSignedQueryString = function (options) {
+  var resourceName = this.createResourceName(options.container, options.blob, true);
+  var startDate = new Date();
+  startDate.setMinutes(-10);
+  var expiryDate = new Date(startDate);
+  expiryDate.setMinutes(startDate.getMinutes() + options.expiryPeriod);
+
+  var sharedAccessPolicy = {
+    AccessPolicy: {
+      Permissions: options.permissions,
+      Start: startDate,
+      Expiry: expiryDate
+    }
+  };
+
+  return this.generateSignedQueryString(options.serviceType, resourceName, sharedAccessPolicy, options.sasVersion, { resourceType: options.resourceType });
+};
+
+AzureStorageSas.prototype.createResourceName = function (containerName, blobName, forSAS) {
+  // Resource name
+  if (blobName && !forSAS) {
+    blobName = encodeURIComponent(blobName);
+    blobName = blobName.replace(/%2F/g, '/');
+    blobName = blobName.replace(/%5C/g, '/');
+    blobName = blobName.replace(/\+/g, '%20');
+  }
+
+  // return URI encoded resource name
+  if (blobName) {
+    return containerName + '/' + blobName;
+  }
+  else {
+    return containerName;
+  }
+};
+
+AzureStorageSas.prototype.generateSignedQueryString = function (serviceType, path, sharedAccessPolicy, sasVersion, args) {
+  var addIfNotNull = function (queryString, name, value) {
+    if (!this.objectIsNull(name) && !this.objectIsNull(value)) {
+      queryString[name] = value;
+    }
+  }.bind(this);
+
+  var formatAccessPolicyDates = function (accessPolicy) {
+    if (!this.objectIsNull(accessPolicy.Start)) {
+      if (!_.isDate(accessPolicy.Start)) {
+        accessPolicy.Start = new Date(accessPolicy.Start);
+      }
+
+      accessPolicy.Start = this.truncatedISO8061Date(accessPolicy.Start);
+    }
+
+    if (!this.objectIsNull(accessPolicy.Expiry)) {
+      if (!_.isDate(accessPolicy.Expiry)) {
+        accessPolicy.Expiry = new Date(accessPolicy.Expiry);
+      }
+
+      accessPolicy.Expiry = this.truncatedISO8061Date(accessPolicy.Expiry);
+    }
+  }.bind(this);
+
+  // set up optional args
+  var queryString;
+  var resourceType;
+  var headers;
+  var tableName;
+
+  if (args) {
+    queryString = args.queryString;
+    resourceType = args.resourceType;
+    tableName = args.tableName;
+    headers = args.headers;
+  }
+
+  if (!queryString) {
+    queryString = {};
+  }
+
+  // add shared access policy params
+  if (sharedAccessPolicy.AccessPolicy) {
+    formatAccessPolicyDates(sharedAccessPolicy.AccessPolicy);
+
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_START, sharedAccessPolicy.AccessPolicy.Start);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_EXPIRY, sharedAccessPolicy.AccessPolicy.Expiry);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_PERMISSIONS, sharedAccessPolicy.AccessPolicy.Permissions);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_IP, sharedAccessPolicy.AccessPolicy.IPAddressOrRange);
+    addIfNotNull(queryString, QueryStringConstants.SIGNED_PROTOCOL, sharedAccessPolicy.AccessPolicy.Protocols);
+
+    // tables only
+    addIfNotNull(queryString, QueryStringConstants.STARTPK, sharedAccessPolicy.AccessPolicy.StartPk);
+    addIfNotNull(queryString, QueryStringConstants.ENDPK, sharedAccessPolicy.AccessPolicy.EndPk);
+    addIfNotNull(queryString, QueryStringConstants.STARTRK, sharedAccessPolicy.AccessPolicy.StartRk);
+    addIfNotNull(queryString, QueryStringConstants.ENDRK, sharedAccessPolicy.AccessPolicy.EndRk);
+  }
+
+  // validate and add version
+  var validatedSASVersionString = sasVersion; //validateVersion(sasVersion);
+  addIfNotNull(queryString, QueryStringConstants.SIGNED_VERSION, validatedSASVersionString);
+
+  // add signed identifier
+  addIfNotNull(queryString, QueryStringConstants.SIGNED_IDENTIFIER, sharedAccessPolicy.Id);
+
+  // blobs only
+  addIfNotNull(queryString, QueryStringConstants.SIGNED_RESOURCE, resourceType);
+  if (headers) {
+    addIfNotNull(queryString, QueryStringConstants.CACHE_CONTROL, headers.cacheControl);
+    addIfNotNull(queryString, QueryStringConstants.CONTENT_TYPE, headers.contentType);
+    addIfNotNull(queryString, QueryStringConstants.CONTENT_ENCODING, headers.contentEncoding);
+    addIfNotNull(queryString, QueryStringConstants.CONTENT_LANGUAGE, headers.contentLanguage);
+    addIfNotNull(queryString, QueryStringConstants.CONTENT_DISPOSITION, headers.contentDisposition);
+  }
+
+  // tables only
+  addIfNotNull(queryString, QueryStringConstants.TABLENAME, tableName);
+
+  // add signature
+  addIfNotNull(queryString, QueryStringConstants.SIGNATURE, this._generateSignature(serviceType, path, sharedAccessPolicy, validatedSASVersionString, { resourceType: resourceType, headers: headers, tableName: tableName }));
+
+  return this.queryStringStringify(queryString);
+};
+
+AzureStorageSas.prototype._generateSignature = function (serviceType, path, sharedAccessPolicy, sasVersion, args) {
+  var getvalueToAppend = function (value, noNewLine) {
+    var returnValue = '';
+    if (!this.objectIsNull(value)) {
+      returnValue = value;
+    }
+
+    if (noNewLine !== true) {
+      returnValue += '\n';
+    }
+
+    return returnValue;
+  }.bind(this);
+
+  // set up optional args
+  var resourceType;
+  var tableName;
+  var headers;
+  if (args) {
+    resourceType = args.resourceType;
+    tableName = args.tableName;
+    headers = args.headers;
+  }
+
+  // Add leading slash to path
+  if (path.substr(0, 1) !== '/') {
+    path = '/' + path;
+  }
+
+  var canonicalizedResource;
+
+  canonicalizedResource = '/' + serviceType + '/' + this.storageAccount + path;
+
+  var stringToSign = getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Permissions : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Start : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Expiry : '') +
+    getvalueToAppend(canonicalizedResource) +
+    getvalueToAppend(sharedAccessPolicy.Id) +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.IPAddressOrRange : '') +
+    getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.Protocols : '') +
+    sasVersion;
+
+  if (resourceType) {
+    stringToSign += '\n' +
+      getvalueToAppend(headers ? headers.cacheControl : '') +
+      getvalueToAppend(headers ? headers.contentDisposition : '') +
+      getvalueToAppend(headers ? headers.contentEncoding : '') +
+      getvalueToAppend(headers ? headers.contentLanguage : '') +
+      getvalueToAppend(headers ? headers.contentType : '', true);
+  }
+
+
+  if (tableName) {
+    stringToSign += '\n' +
+      getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.StartPk : '') +
+      getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.StartRk : '') +
+      getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.EndPk : '') +
+      getvalueToAppend(sharedAccessPolicy.AccessPolicy ? sharedAccessPolicy.AccessPolicy.EndRk : '', true);
+  }
+
+  return this.signString(stringToSign);
+};
+
+AzureStorageSas.prototype.signString = function (stringToSign) {
+  var decodedKey = CryptoJS.enc.Base64.parse(this.storageAccessKey);
+  var hmac = CryptoJS.HmacSHA256(stringToSign, decodedKey); // The signature generated from the decodedKey
+  var digest = CryptoJS.enc.Base64.stringify(hmac);
+  return digest;
+}
+
+AzureStorageSas.prototype.objectIsNull = function (value) {
+  return _.isNull(value) || _.isUndefined(value);
+};
+
+AzureStorageSas.prototype.truncatedISO8061Date = function (date) {
+  var dateString = date.toISOString();
+  return dateString.substring(0, dateString.length - 5) + 'Z';
+};
+
+//AzureStorageSas.prototype.queryStringStringify = 
+var stringifyPrimitive = function (v) {
+  switch (typeof v) {
+    case 'string':
+      return v;
+
+    case 'boolean':
+      return v ? 'true' : 'false';
+
+    case 'number':
+      return isFinite(v) ? v : '';
+
+    default:
+      return '';
+  }
+};
+
+AzureStorageSas.prototype.queryStringStringify = function (obj, sep, eq, name) {
+  sep = sep || '&';
+  eq = eq || '=';
+  if (obj === null) {
+    obj = undefined;
+  }
+
+  if (typeof obj === 'object') {
+    return Object.keys(obj).map(function (k) {
+      var ks = encodeURIComponent(stringifyPrimitive(k)) + eq;
+      if (Array.isArray(obj[k])) {
+        return obj[k].map(function (v) {
+          return ks + encodeURIComponent(stringifyPrimitive(v));
+        }).join(sep);
+      } else {
+        return ks + encodeURIComponent(stringifyPrimitive(obj[k]));
+      }
+    }).join(sep);
+
+  }
+
+  if (!name) return '';
+  return encodeURIComponent(stringifyPrimitive(name)) + eq +
+    encodeURIComponent(stringifyPrimitive(obj));
+};
+
+var storageDnsSuffix = 'core.windows.net'; //process.env.AZURE_STORAGE_DNS_SUFFIX || 'core.windows.net';
 
 /**
 * Defines constants.
@@ -80,7 +477,7 @@ var Constants = {
   * @type {string}
   */
   HTTPS: 'https:',
-  
+
   /**
   * Default HTTP port.
   *
@@ -88,7 +485,7 @@ var Constants = {
   * @type {int}
   */
   DEFAULT_HTTP_PORT: 80,
-  
+
   /**
   * Default HTTPS port.
   *
@@ -122,7 +519,7 @@ var Constants = {
   * @type {string}
   */
   XML_VALUE_MARKER: '_',
-  
+
   /**
   * Defines the service types indicators.
   * 
@@ -158,8 +555,8 @@ var Constants = {
     PRIMARY: 0,
     SECONDARY: 1,
   },
-  
-  AccountSasConstants:{
+
+  AccountSasConstants: {
     /**
     * Permission types
     *
@@ -176,7 +573,7 @@ var Constants = {
       DELETE: 'd',
       LIST: 'l'
     },
-    
+
     /**
     * Services types
     *
@@ -189,7 +586,7 @@ var Constants = {
       QUEUE: 'q',
       TABLE: 't',
     },
-    
+
     /**
     * Resources types
     *
@@ -201,7 +598,7 @@ var Constants = {
       CONTAINER: 'c',
       OBJECT: 'o'
     },
-    
+
     Protocols: {
       HTTPSONLY: 'https',
       HTTPSORHTTP: 'https,http'
@@ -485,7 +882,7 @@ var Constants = {
     * @type {int}
     */
     DEFAULT_WRITE_PAGE_SIZE_IN_BYTES: 4 * 1024 * 1024,
-    
+
     /**
     * The minimum write page size, in bytes, used by blob streams.
     *
@@ -537,23 +934,23 @@ var Constants = {
     /**
     * The maximum range get size when requesting for a contentMD5
     */
-    MAX_RANGE_GET_SIZE_WITH_MD5 : 4 * 1024 * 1024,
+    MAX_RANGE_GET_SIZE_WITH_MD5: 4 * 1024 * 1024,
 
     /**
     * The maximum page range size for a page update operation.
     */
-    MAX_UPDATE_PAGE_SIZE : 4 * 1024 * 1024,
-    
+    MAX_UPDATE_PAGE_SIZE: 4 * 1024 * 1024,
+
     /**
     * The maximum buffer size for writing a stream buffer.
     */
-    MAX_QUEUED_WRITE_DISK_BUFFER_SIZE : 64 * 1024 * 1024,
-    
+    MAX_QUEUED_WRITE_DISK_BUFFER_SIZE: 64 * 1024 * 1024,
+
     /**
     * Max size for single get page range. The max value should be 150MB
     * http://blogs.msdn.com/b/windowsazurestorage/archive/2012/03/26/getting-the-page-ranges-of-a-large-page-blob-in-segments.aspx
     */
-    MAX_SINGLE_GET_PAGE_RANGE_SIZE : 37 * 4 * 1024 * 1024,
+    MAX_SINGLE_GET_PAGE_RANGE_SIZE: 37 * 4 * 1024 * 1024,
 
     /**
     * The size of a page, in bytes, in a page blob.
@@ -638,12 +1035,12 @@ var Constants = {
     /**
     * The maximum range size when requesting for a contentMD5.
     */
-    MAX_RANGE_GET_SIZE_WITH_MD5 : 4 * 1024 * 1024,
+    MAX_RANGE_GET_SIZE_WITH_MD5: 4 * 1024 * 1024,
 
     /**
     * The maximum range size for a file update operation.
     */
-    MAX_UPDATE_FILE_SIZE : 4 * 1024 * 1024,
+    MAX_UPDATE_FILE_SIZE: 4 * 1024 * 1024,
 
     /**
     * The default minimum size, in bytes, of a file when it must be separated into ranges.
@@ -763,12 +1160,12 @@ var Constants = {
     */
     NEXT_ROW_KEY: 'NextRowKey',
 
-        /**
-    * The next partition key query string argument.
-    *
-    * @const
-    * @type {string}
-    */
+    /**
+* The next partition key query string argument.
+*
+* @const
+* @type {string}
+*/
     NEXT_PARTITION_KEY: 'NextPartitionKey',
 
     /**
@@ -1684,7 +2081,7 @@ var Constants = {
     * @type {string}
     */
     SHARE_QUOTA: 'x-ms-share-quota',
-    
+
     /**
     * The max blob size header.
     *
@@ -1813,7 +2210,7 @@ var Constants = {
     * @type {string}
     */
     SIGNED_PERMISSIONS: 'sp',
-    
+
     /**
     * The signed services query string argument for shared access signature.
     *
@@ -1821,7 +2218,7 @@ var Constants = {
     * @type {string}
     */
     SIGNED_SERVICES: 'ss',
-    
+
     /**
     * The signed resource types query string argument for shared access signature.
     *
@@ -1829,7 +2226,7 @@ var Constants = {
     * @type {string}
     */
     SIGNED_RESOURCE_TYPES: 'srt',
-    
+
     /**
     * The signed IP query string argument for shared access signature.
     *
@@ -1837,7 +2234,7 @@ var Constants = {
     * @type {string}
     */
     SIGNED_IP: 'sip',
-    
+
     /**
     * The signed protocol query string argument for shared access signature.
     *
@@ -2247,17 +2644,17 @@ var Constants = {
   StorageErrorCodeStrings: {
     // Not Modified (304): The condition specified in the conditional header(s) was not met for a read operation.
     // Precondition Failed (412): The condition specified in the conditional header(s) was not met for a write operation.
-    CONDITION_NOT_MET: 'ConditionNotMet', 
+    CONDITION_NOT_MET: 'ConditionNotMet',
     // Bad Request (400): A required HTTP header was not specified.
-    MISSING_REQUIRED_HEADER: 'MissingRequiredHeader', 
+    MISSING_REQUIRED_HEADER: 'MissingRequiredHeader',
     // Bad Request (400): A required XML node was not specified in the request body.
-    MISSING_REQUIRED_XML_NODE: 'MissingRequiredXmlNode', 
+    MISSING_REQUIRED_XML_NODE: 'MissingRequiredXmlNode',
     // Bad Request (400): One of the HTTP headers specified in the request is not supported.
     UNSUPPORTED_HEADER: 'UnsupportedHeader',
     // Bad Request (400): One of the XML nodes specified in the request body is not supported.
-    UNSUPPORTED_XML_NODE: 'UnsupportedXmlNode', 
+    UNSUPPORTED_XML_NODE: 'UnsupportedXmlNode',
     // Bad Request (400): The value provided for one of the HTTP headers was not in the correct format.
-    INVALID_HEADER_VALUE: 'InvalidHeaderValue', 
+    INVALID_HEADER_VALUE: 'InvalidHeaderValue',
     // Bad Request (400): The value provided for one of the XML nodes in the request body was not in the correct format.
     INVALID_XML_NODE_VALUE: 'InvalidXmlNodeValue',
     // Bad Request (400): A required query parameter was not specified for this request.
@@ -2390,4 +2787,14 @@ var Constants = {
   }
 };
 
-module.exports = Constants;
+var HeaderConstants = Constants.HeaderConstants;
+var QueryStringConstants = Constants.QueryStringConstants;
+var HeaderConstants = Constants.HeaderConstants;
+var CompatibleVersionConstants = Constants.CompatibleVersionConstants;
+
+
+module.exports = AzureStorageSas;
+
+
+
+
