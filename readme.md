@@ -26,10 +26,19 @@ st=2017-03-13T04%3A43%3A25Z&se=2017-03-13T05%3A43%3A25Z&sp=rwd&sv=2016-05-31&sr=
 ### Generate Tokens in Postman
 To run in Postman
 
-1. Copy [azure-storage/azure-storage-sas-postman.js](azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script Sandbox.
+1\. Copy [azure-storage/azure-storage-sas-postman.js](azure-storage/azure-storage-sas-postman.js) into the requests Pre-request Script Sandbox.
 ![](assets/azure-storage-pre-request-script.png)
 
-2. Set the following environment variables:
+The first part of this code file is a port of the Azure Storage Node SDK to work with Postman's sandbox.  The bottom of the file contains the code that generates the SAS QueryString and saves it to an Environment variable.  (The device-export-postman-env-variable-name setting you set above.)  You can read more about the SAS Token port form Azure Storage Node SDK to Postman here: ["How to Generate an Azure Storage Shared Access Signature (SAS) Token in Postman's Pre-request Script Sandbox"](http://blog.jongallant.com/azure-storage-sas-token-postman)
+
+``` javascript
+var storageSas = new AzureStorageSas(accountName, accountKey);
+var signedQueryString = storageSas.getSignedQueryString(options);
+
+postman.setEnvironmentVariable(postmanEnvVariableName, signedQueryString);
+```
+
+2\. Set the following environment variables:
 
 > These variable names have "device-storage" in them because this was created with the Azure IoT Hub Device Export REST APIs in mind. You can change these names to whatever suits your needs.
 
@@ -44,16 +53,7 @@ Here's what they will look like in the Postman Environment editor.
 
 ![](assets/azure-storage-postman-variables.png)
 
-The first part of this code file is a port of the Azure Storage Node SDK to work with Postman's sandbox.  The bottom of the file contains the code that generates the SAS QueryString and saves it to an Environment variable.  (The device-export-postman-env-variable-name setting you set above.)  You can read more about the SAS Token port form Azure Storage Node SDK to Postman here: ["How to Generate an Azure Storage Shared Access Signature (SAS) Token in Postman's Pre-request Script Sandbox"](http://blog.jongallant.com/azure-storage-sas-token-postman)
-
-``` javascript
-var storageSas = new AzureStorageSas(accountName, accountKey);
-var signedQueryString = storageSas.getSignedQueryString(options);
-
-postman.setEnvironmentVariable(postmanEnvVariableName, signedQueryString);
-```
-
-3. Execute the request.
+3\. Execute the request.
 
 You can then use the SAS Token QueryString in subsequent Postman calls by either:
 
@@ -80,3 +80,5 @@ Here's what the headers will look like:
 
 
 More SAS Token examples coming soon...
+
+Jon
